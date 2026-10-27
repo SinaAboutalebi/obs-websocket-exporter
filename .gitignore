@@ -1,0 +1,8 @@
+/obs-websocket-exporter
+/obs-websocket-exporter.exe
+/config.yml
+/config.yaml
+/.env
+*.test
+coverage.out
+/dist/

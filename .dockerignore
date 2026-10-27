@@ -1,0 +1,8 @@
+.git
+config.yml
+config.yaml
+.env
+obs-websocket-exporter
+obs-websocket-exporter.exe
+dist
+coverage.out

@@ -1,0 +1,18 @@
+# One stable name per studio; addresses are alternatives for the same OBS instance.
+listen: ":9407"
+poll_interval: 5s
+request_timeout: 3s
+reconnect_interval: 5s
+# Shared OBS password for every studio.
+password_env: OBS_PASSWORD
+
+instances:
+  - name: studio-1
+    urls:
+      - ws://192.168.1.101:4455
+      - ws://10.10.1.101:4455
+
+  - name: studio-2
+    urls:
+      - ws://192.168.1.102:4455
+      - ws://10.10.1.102:4455
