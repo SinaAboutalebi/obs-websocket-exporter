@@ -1,188 +1,35 @@
-name: CI and release
+name: Build and publish Docker image
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
     tags: ['v*']
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  packages: write
 
 jobs:
-  checks:
-    name: Go ${{ matrix.go }} checks
+  docker:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        go: ['1.23.x', '1.27.x']
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ${{ matrix.go }}
-          cache-dependency-path: go.sum
-      - name: Check formatting
-        run: test -z "$(gofmt -l *.go)"
-      - run: go mod verify
-      - run: go vet ./...
-      - run: go test -race -cover ./...
-
-  binaries:
-    name: Binary ${{ matrix.os }}/${{ matrix.arch }}
-    needs: checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [linux, darwin, windows]
-        arch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.x'
-          cache-dependency-path: go.sum
-      - name: Build and package
-        shell: bash
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          CGO_ENABLED: '0'
-        run: |
-          set -euo pipefail
-          mkdir -p package dist
-          binary=obs-websocket-exporter
-          if [ "$GOOS" = windows ]; then binary="$binary.exe"; fi
-          go build -trimpath -ldflags='-s -w' -o "package/$binary" .
-          cp config.example.yml README.md package/
-          archive="obs-websocket-exporter_${GOOS}_${GOARCH}"
-          if [ "$GOOS" = windows ]; then
-            (cd package && zip -q "../dist/$archive.zip" "$binary" config.example.yml README.md)
-          else
-            tar -czf "dist/$archive.tar.gz" -C package "$binary" config.example.yml README.md
-          fi
-      - uses: actions/upload-artifact@v7
-        with:
-          name: binary-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 14
-
-  container:
-    name: Alpine container
-    needs: checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - name: Container metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: latest=false
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-            type=sha
-      - name: Build local smoke-test image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: obs-exporter:test
-          cache-from: type=gha,scope=container
-          cache-to: type=gha,mode=max,scope=container
-      - name: Check Alpine runtime, non-root user and CA certificates
-        run: |
-          docker run --rm --entrypoint /bin/sh obs-exporter:test -ec \
-            'test -s /etc/alpine-release; test "$(id -u)" = 10001; test -s /etc/ssl/certs/ca-certificates.crt'
-          docker run --rm obs-exporter:test -help
-      - name: Smoke-test the container service
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "$RUNNER_TEMP/obs-config.yml" <<'CONFIG'
-          instances:
-            - name: offline-ci
-              urls: [ws://127.0.0.1:1]
-          CONFIG
-          chmod 644 "$RUNNER_TEMP/obs-config.yml"
-          docker run -d --name obs-smoke -p 127.0.0.1:9407:9407 \
-            --mount "type=bind,src=$RUNNER_TEMP/obs-config.yml,dst=/config/config.yml,readonly" \
-            obs-exporter:test
-          trap 'docker logs obs-smoke; docker rm -f obs-smoke' EXIT
-          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:9407/healthz
-          curl --fail http://127.0.0.1:9407/metrics > "$RUNNER_TEMP/obs-metrics"
-          grep -q 'obs_up{obs_instance="offline-ci"} 0' "$RUNNER_TEMP/obs-metrics"
       - name: Log in to GHCR
-        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build both container architectures
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=container
-          cache-to: type=gha,mode=max,scope=container
-
-  release:
-    name: Publish binary release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [binaries, container]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: binary-*
-          merge-multiple: true
-          path: dist
-      - name: Publish release archives and checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Build and publish
         shell: bash
         run: |
           set -euo pipefail
-          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS)
-          options=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* --clobber
-          else
-            gh release create "$RELEASE_TAG" dist/* --verify-tag \
-              --title "$RELEASE_TAG" --generate-notes "${options[@]}"
+          exporter_image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          exporter_tag=latest
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            exporter_tag="$GITHUB_REF_NAME"
           fi
+          docker build -t "$exporter_image:$exporter_tag" .
+          docker push "$exporter_image:$exporter_tag"
