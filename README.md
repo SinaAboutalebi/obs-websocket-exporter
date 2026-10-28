@@ -180,7 +180,30 @@ docker run --rm --name obs-websocket-exporter \
   obs-websocket-exporter
 ```
 
+The runtime image uses Alpine 3.24 with CA certificates and runs as UID/GID `10001:10001`. Make the mounted YAML configuration readable by that user; keep passwords in environment variables. Images support Linux amd64 and arm64.
+
 The container must have a route to the OBS machines. Inside a container, `localhost` refers to that container. Export the password variable in your shell before using `-e NAME`.
+
+## CI/CD
+
+GitHub Actions runs automatically on pull requests to `main`, pushes to `main`, and `v*` tags. You can also run it manually from the Actions tab; manual runs validate and build without publishing.
+
+- Checks: formatting, module integrity, static analysis, and race-enabled tests on Go 1.23 and 1.27.
+- Binaries: Linux, macOS, and Windows for amd64 and arm64. Every archive includes the example configuration and README; artifacts are retained for 14 days.
+- Containers: builds and smoke-tests the Alpine image, then builds Linux amd64/arm64 images. Pull requests never publish images.
+- Delivery: pushes to `main` publish `ghcr.io/sinaaboutalebi/obs-websocket-exporter:latest` and a `sha-...` tag. Version tag pushes publish the matching image tag, for example `:v1.0.0`.
+- Releases: a `v*` tag creates a GitHub Release after checks, binaries, and containers succeed, with six archives and `SHA256SUMS`. Tags containing a hyphen (such as `v1.0.0-rc.1`) produce prereleases. Reruns update the existing release assets.
+
+Publishing uses the built-in `GITHUB_TOKEN`; no Docker Hub account or custom registry secret is needed. Repository/organization policy must allow GitHub Actions to write packages and releases. Package visibility is managed separately in GHCR settings.
+
+After pushing this workflow to GitHub, create a release with:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+To run a published image, use the same configuration mount and password environment variable shown above, replacing the local image name with `ghcr.io/sinaaboutalebi/obs-websocket-exporter:latest` (or a version tag). The pipeline publishes artifacts and images; installing or restarting the service on your VM remains a separate deployment step.
 
 ## Development
 
